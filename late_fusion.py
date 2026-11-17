@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""双分支晚期融合：p = w * p_rad + (1 - w) * p_deep，默认 w = 0.7。"""
+"""双分支晚期融合：p = w * p_rad + (1 - w) * p_deep，默认 w = 0.5。"""
 
 from __future__ import annotations
 
@@ -143,7 +143,7 @@ def main() -> None:
     ap.add_argument("--select-k", type=int, default=50)
     ap.add_argument("--pca-variance", type=float, default=0.85)
     ap.add_argument("--k-fold", type=int, default=5)
-    ap.add_argument("--weight-rad", type=float, default=0.7)
+    ap.add_argument("--weight-rad", type=float, default=0.5)
     ap.add_argument("--device", type=str, default="cpu", choices=("cpu", "cuda"))
     ap.add_argument("--mask-tag", type=str, default="lesion_t2t")
     ap.add_argument(
