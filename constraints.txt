@@ -1,0 +1,3 @@
+# 与 requirements.txt 同用，防止单独装 pyradiomics 时把 numpy 升到 2.x：
+#   pip install -r requirements.txt -c constraints.txt
+numpy<2.0.0
