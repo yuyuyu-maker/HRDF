@@ -3,12 +3,13 @@
 Dual-branch late fusion of a radiomics pathway and an AxialGate3D pathway.
 
 ```
-p = 0.5 * p_rad + 0.5 * p_deep
+p = 0.7 * p_rad + 0.3 * p_deep
 ```
 
 - Radiomics pathway: PyRadiomics and habitat features are extracted inside the lesion ROI on T2, DWI, and ADC. After scaling, mutual-information selection (k = 50), and PCA (85% variance retained), a class-balanced logistic regression produces `p_rad`.
 - Deep pathway: the three-channel lesion patch, registered to T2, is resampled to `3 × 64 × 64 × 12`. AxialGate3D produces `p_deep`.
-- Fusion: the out-of-fold probabilities are combined with equal weights, 0.5 / 0.5.
+- Fusion: the out-of-fold probabilities are combined with weights 0.7 (radiomics) and 0.3 (deep).
+- Decision threshold: accuracy and F1 use the Youden cutoff. On each training fold it is chosen from that fold's training probabilities. Pooled OOF summaries use the Youden point of the reported curve.
 
 Images and trained weights are not included in this repository.
 

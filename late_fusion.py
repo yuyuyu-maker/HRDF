@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""双分支晚期融合：p = w * p_rad + (1 - w) * p_deep，默认 w = 0.5。"""
+"""双分支晚期融合：p = w * p_rad + (1 - w) * p_deep，默认 w = 0.7。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from radiomics_pipeline.deep_cv import (
     build_3d_model,
 )
 from radiomics_pipeline.id_list import load_subject_ids
-from radiomics_pipeline.model_cv import _nan_safe_matrix, collect_oof_probs
+from radiomics_pipeline.model_cv import _nan_safe_matrix, collect_oof_probs, youden_threshold
 from radiomics_pipeline.run_pipeline import load_label_csv
 
 
@@ -102,7 +102,8 @@ def collect_deep_oof_from_checkpoints(
 
 
 def evaluate_binary(y_true: np.ndarray, prob: np.ndarray) -> dict[str, float]:
-    pred = (prob >= 0.5).astype(int)
+    thr = youden_threshold(y_true, prob)
+    pred = (prob >= thr).astype(int)
     if len(np.unique(y_true)) < 2:
         auc = float("nan")
     else:
@@ -111,6 +112,7 @@ def evaluate_binary(y_true: np.ndarray, prob: np.ndarray) -> dict[str, float]:
         "roc_auc": auc,
         "accuracy": float(accuracy_score(y_true, pred)),
         "f1": float(f1_score(y_true, pred, zero_division=0)),
+        "youden_threshold": thr,
     }
 
 
@@ -143,7 +145,7 @@ def main() -> None:
     ap.add_argument("--select-k", type=int, default=50)
     ap.add_argument("--pca-variance", type=float, default=0.85)
     ap.add_argument("--k-fold", type=int, default=5)
-    ap.add_argument("--weight-rad", type=float, default=0.5)
+    ap.add_argument("--weight-rad", type=float, default=0.7)
     ap.add_argument("--device", type=str, default="cpu", choices=("cpu", "cuda"))
     ap.add_argument("--mask-tag", type=str, default="lesion_t2t")
     ap.add_argument(
@@ -206,6 +208,7 @@ def main() -> None:
     y_arr = merged["y_true"].astype(int).to_numpy()
     summary = {
         "method": "weighted_late_fusion",
+        "decision_threshold": "youden",
         "weight_rad": w,
         "weight_deep": 1.0 - w,
         "n_samples": int(len(merged)),

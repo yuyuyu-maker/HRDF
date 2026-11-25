@@ -9,7 +9,8 @@ import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import SelectKBest, mutual_info_classif
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, roc_curve
+from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -18,6 +19,24 @@ OOFRecord = dict[str, Any]
 
 def _nan_safe_matrix(df: pd.DataFrame) -> pd.DataFrame:
     return df.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
+def youden_threshold(y_true: np.ndarray, prob: np.ndarray) -> float:
+    """正类概率的切分点：最大化 Youden 指数 J = TPR − FPR。无法估计时回退 0.5。"""
+    y_arr = np.asarray(y_true).astype(int).ravel()
+    p_arr = np.asarray(prob, dtype=float).ravel()
+    ok = np.isfinite(p_arr)
+    y_arr, p_arr = y_arr[ok], p_arr[ok]
+    if y_arr.size == 0 or len(np.unique(y_arr)) < 2:
+        return 0.5
+    _fpr, tpr, thresholds = roc_curve(y_arr, p_arr)
+    j = tpr - _fpr
+    finite = np.isfinite(thresholds)
+    if not np.any(finite):
+        return 0.5
+    j = np.where(finite, j, -np.inf)
+    thr = float(thresholds[int(np.argmax(j))])
+    return thr if np.isfinite(thr) else 0.5
 
 
 def _build_pipeline(
@@ -83,8 +102,12 @@ def collect_repeated_oof(
         )
         for fold, (train_idx, val_idx) in enumerate(cv.split(X.values, y.values)):
             pipe.fit(X.values[train_idx], y.values[train_idx])
+            thr = youden_threshold(
+                y.values[train_idx],
+                pipe.predict_proba(X.values[train_idx])[:, 1],
+            )
             proba = pipe.predict_proba(X.values[val_idx])[:, 1]
-            pred = (proba >= 0.5).astype(int)
+            pred = (proba >= thr).astype(int)
             for j, idx in enumerate(val_idx):
                 yt = int(y.values[idx])
                 pp = float(proba[j])
@@ -148,6 +171,8 @@ def run_stratified_kfold(
 ) -> dict[str, Any]:
     """
     Pipeline: StandardScaler → SelectKBest(mutual_info) → PCA → LogisticRegression。
+
+    准确率与 F1 使用各折训练集概率上的 Youden 切分点，不使用 0.5。
     """
     X = _nan_safe_matrix(X)
     y = y.astype(int)
@@ -155,33 +180,44 @@ def run_stratified_kfold(
         raise ValueError("标签只有一个类别，无法做分层 K 折与 ROC-AUC。")
     if len(y) < n_splits:
         raise ValueError(f"样本数 {len(y)} 小于折数 {n_splits}，请减小 --k-fold。")
-    pipe = _build_pipeline(
-        X.shape[1],
-        random_state=random_state,
-        select_k=select_k,
-        pca_variance=pca_variance,
-    )
     cv = StratifiedKFold(
         n_splits=n_splits, shuffle=True, random_state=random_state
     )
-    scoring = {"roc_auc": "roc_auc", "accuracy": "accuracy", "f1": "f1"}
-    res = cross_validate(
-        pipe,
-        X.values,
-        y.values,
-        cv=cv,
-        scoring=scoring,
-        n_jobs=-1,
-        return_train_score=False,
-    )
+    aucs: list[float] = []
+    accs: list[float] = []
+    f1s: list[float] = []
+    thrs: list[float] = []
+    for train_idx, val_idx in cv.split(X.values, y.values):
+        pipe = _build_pipeline(
+            X.shape[1],
+            random_state=random_state,
+            select_k=select_k,
+            pca_variance=pca_variance,
+        )
+        y_train = y.values[train_idx]
+        y_val = y.values[val_idx]
+        pipe.fit(X.values[train_idx], y_train)
+        thr = youden_threshold(y_train, pipe.predict_proba(X.values[train_idx])[:, 1])
+        proba = pipe.predict_proba(X.values[val_idx])[:, 1]
+        pred = (proba >= thr).astype(int)
+        if len(np.unique(y_val)) >= 2:
+            aucs.append(float(roc_auc_score(y_val, proba)))
+        accs.append(float(accuracy_score(y_val, pred)))
+        f1s.append(float(f1_score(y_val, pred, zero_division=0)))
+        thrs.append(thr)
+    if not aucs:
+        raise ValueError("各折验证集都只有一个类别，无法计算 ROC-AUC。")
     return {
         "n_samples": int(len(y)),
         "n_splits": n_splits,
-        "roc_auc_mean": float(np.mean(res["test_roc_auc"])),
-        "roc_auc_std": float(np.std(res["test_roc_auc"])),
-        "accuracy_mean": float(np.mean(res["test_accuracy"])),
-        "f1_mean": float(np.mean(res["test_f1"])),
-        "fold_roc_auc": res["test_roc_auc"].tolist(),
+        "decision_threshold": "youden",
+        "roc_auc_mean": float(np.mean(aucs)),
+        "roc_auc_std": float(np.std(aucs)),
+        "accuracy_mean": float(np.mean(accs)),
+        "f1_mean": float(np.mean(f1s)),
+        "youden_threshold_mean": float(np.mean(thrs)),
+        "fold_roc_auc": aucs,
+        "fold_youden_threshold": thrs,
     }
 
 

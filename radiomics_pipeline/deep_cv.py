@@ -24,6 +24,7 @@ if str(_root) not in sys.path:
 from mri_case_reader import discover_nifti_stems, infer_subject_id
 from radiomics_pipeline.cohort_qc import filter_subject_ids
 from radiomics_pipeline.id_list import load_subject_ids
+from radiomics_pipeline.model_cv import youden_threshold
 from radiomics_pipeline.preprocess import build_normalized_stack
 from radiomics_pipeline.roi_mask import find_lesion_roi_path, lesion_mask_numpy
 from radiomics_pipeline.run_pipeline import load_label_csv
@@ -562,17 +563,20 @@ def _train_eval_fold(
             if ep == 1 or ep == best_ep or ep % max(1, best_ep // 5) == 0:
                 _log(f"  [Fold {fold}/{n_splits}] retrain ep {ep}/{best_ep}")
 
-    _log(f"  [Fold {fold}/{n_splits}] 验证集推理 ({len(val_x)} 例)...")
-    model.eval()
-    probs: list[float] = []
-    preds: list[int] = []
-    with torch.no_grad():
-        for xb, yb in zip(val_x, val_y):
-            t = torch.from_numpy(xb).unsqueeze(0).to(device)
-            logit = model(t)
-            p = torch.softmax(logit, dim=1)[0, 1].item()
-            probs.append(p)
-            preds.append(int(p >= 0.5))
+    def _positive_probs(samples: list[np.ndarray]) -> list[float]:
+        model.eval()
+        out: list[float] = []
+        with torch.no_grad():
+            for xb in samples:
+                t = torch.from_numpy(xb).unsqueeze(0).to(device)
+                out.append(float(torch.softmax(model(t), dim=1)[0, 1].item()))
+        return out
+
+    _log(f"  [Fold {fold}/{n_splits}] 训练集上估计 Youden 切分点...")
+    thr = youden_threshold(train_y, _positive_probs(train_x))
+    _log(f"  [Fold {fold}/{n_splits}] 验证集推理 ({len(val_x)} 例, thr={thr:.4f})...")
+    probs = _positive_probs(val_x)
+    preds = [int(p >= thr) for p in probs]
 
     if len(set(val_y)) < 2:
         auc = float("nan")
@@ -589,6 +593,8 @@ def _train_eval_fold(
                 "early_stop_patience": early_stop_patience,
                 "best_epoch": best_ep if best_state is not None else epochs,
                 "model_name": model_name,
+                "decision_threshold": "youden",
+                "youden_threshold": thr,
                 "roc_auc": auc,
                 "accuracy": float(accuracy_score(val_y, preds)),
                 "f1": float(f1_score(val_y, preds, zero_division=0)),
@@ -600,6 +606,7 @@ def _train_eval_fold(
         "roc_auc": auc,
         "accuracy": float(accuracy_score(val_y, preds)),
         "f1": float(f1_score(val_y, preds, zero_division=0)),
+        "youden_threshold": thr,
     }
 
 
@@ -850,6 +857,7 @@ def main() -> None:
         "n_samples": len(tensors),
         "n_splits": n_splits,
         "epochs": args.epochs,
+        "decision_threshold": "youden",
         "skipped": skipped,
         "roc_auc_mean": float(np.nanmean([m["roc_auc"] for m in fold_metrics])),
         "roc_auc_std": float(np.nanstd([m["roc_auc"] for m in fold_metrics])),
